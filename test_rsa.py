@@ -70,7 +70,8 @@ def run_test(message_text, test_label):
         f.write(message_text)
     
     # Run encryption.
-    cmd_encrypt = f"sage rsa_encrypt.py {message_filename} public_key.csv"
+    # Added quotes around filenames for robustness if they ever contain spaces
+    cmd_encrypt = f"sage rsa_encrypt.py '{message_filename}' public_key.csv"
     run_command(cmd_encrypt)
     
     # Compute expected ciphertext file name.
@@ -78,19 +79,24 @@ def run_test(message_text, test_label):
     ciphertext_filename = f"{base}_cipher{ext}" if ext else f"{message_filename}_cipher"
     
     # Run decryption.
-    cmd_decrypt = f"sage rsa_decrypt.py {ciphertext_filename} private_key.csv"
+    cmd_decrypt = f"sage rsa_decrypt.py '{ciphertext_filename}' private_key.csv"
     run_command(cmd_decrypt)
     
-    # Compute decrypted file name.
-    base_dec, ext_dec = os.path.splitext(ciphertext_filename)
-    decrypted_filename = f"{base_dec}_decrypted{ext_dec}" if ext_dec else f"{ciphertext_filename}_decrypted"
+    # Compute decrypted file name based on how rsa_decrypt.py names it
+    base_cipher, ext_cipher = os.path.splitext(ciphertext_filename)
+    if base_cipher.endswith("_cipher"):
+        original_base_from_cipher = base_cipher[:-len("_cipher")]
+    else:
+        # This case should ideally not be hit if encrypt script is consistent
+        original_base_from_cipher = base_cipher 
+    decrypted_filename = f"{original_base_from_cipher}_decrypted{ext_cipher}"
     
     # Compare the original and decrypted messages.
     with open(message_filename, "r", encoding="utf-8") as f:
         original = f.read()
     if not os.path.exists(decrypted_filename):
         print(f"ERROR: Decrypted file '{decrypted_filename}' was not created.")
-        sys.exit(1)
+        sys.exit(1) # Make sure this exit actually stops the current test run
     with open(decrypted_filename, "r", encoding="utf-8") as f:
         decrypted = f.read()
     
@@ -98,9 +104,14 @@ def run_test(message_text, test_label):
         print(f"SUCCESS ({test_label}): Decrypted text matches the original!")
     else:
         print(f"FAILURE ({test_label}): Decrypted text does not match the original.")
-        print("Original:", original)
-        print("Decrypted:", decrypted)
-
+        # For very large files, printing the whole content might be too much.
+        # Consider printing only a snippet or lengths if they differ.
+        if len(original) < 500 and len(decrypted) < 500: # Only print if reasonably small
+            print("Original:", repr(original[:200])) # Print representation to see hidden chars
+            print("Decrypted:", repr(decrypted[:200]))
+        else:
+            print(f"Original length: {len(original)}, Decrypted length: {len(decrypted)}")
+            
 def main():
     print("=== Group 1: Normal Key Size (1024 bits) ===")
     # Run key generation for 1024-bit keys.
