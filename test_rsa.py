@@ -2,164 +2,417 @@
 """
 test_rsa.py
 -----------
-Test driver for RSA key generation, encryption, and decryption using SageMath.
+Comprehensive test driver for RSA key generation, encryption, and decryption
+using SageMath scripts.
 
-This driver runs two groups of tests:
+This driver runs tests for:
+  - Different key sizes.
+  - Various message/file sizes (text and binary).
+  - Specific file types (images, PDF, DOCX).
+  - Edge cases like key sizes too small for padding.
+  - Robustness against missing key files.
 
-Group 1 (Normal key size 1024):
-  - Runs key generation with key size 1024.
-  - Computes block_size = ((1024*2) - 1) // 8 and data_area = block_size - 15.
-  - Then runs encryption and decryption on messages with different sizes:
-       * Message length exactly equal to data_area.
-       * One byte smaller than data_area.
-       * One byte larger than data_area.
-       * A very small message.
-       * A very large message (1 MB).
-       
-Group 2 (Small key size 64):
-  - Runs key generation with key size 64.
-  - Computes block_size = ((64*2)-1)//8 (which yields 15) so data_area becomes 0.
-  - Then attempts to run encryption/decryption with a dummy message,
-    which is expected to fail.
-    
 Usage:
     python3 test_rsa.py
 
-Note: All output from the underlying RSA scripts (key generation, encryption, decryption)
-      is printed to the console.
+Imp: Place test files like "image.png", "image.jpg", "letter.pdf", "letter.docx", in the same directory as this test_rsa.py script.
+
+Note: Output from the underlying RSA scripts is printed.
+      A summary of test results is provided at the end.
 """
 
-import subprocess, os, sys, random, string
+import subprocess
+import os
+import sys
+import random
+import string
+import shutil # For managing test directory
 
-def run_command(cmd, expect_error=False):
-    """Run a command using subprocess.run() without suppressing output."""
-    print("\nRunning command:")
-    print(cmd)
-    result = subprocess.run(cmd, shell=True)
-    if expect_error:
-        if result.returncode == 0:
-            print("ERROR: Expected an error but command succeeded:", cmd)
-            sys.exit(1)
+# --- Configuration ---
+SAGE_CMD = "sage"
+TEST_DIR_NAME = "rsa_test_workspace" # Directory for temporary test files
+# Script names (will be resolved to absolute paths)
+KEY_GENERATOR_SCRIPT_NAME = "rsa_keygenerator.py"
+ENCRYPT_SCRIPT_NAME = "rsa_encrypt.py"
+DECRYPT_SCRIPT_NAME = "rsa_decrypt.py"
+
+# ANSI Colors
+class Colors:
+    HEADER = '\033[95m'    # Purple
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'   # Green
+    WARNING = '\033[93m'   # Yellow
+    FAIL = '\033[91m'      # Red
+    ENDC = '\033[0m'       # Reset
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    INFO = '\033[94m'      # Blue for info
+
+def cprint(color, message):
+    print(f"{color}{message}{Colors.ENDC}")
+
+# --- Global paths for scripts (resolved in setup) ---
+KEY_GENERATOR_SCRIPT_PATH = ""
+ENCRYPT_SCRIPT_PATH = ""
+DECRYPT_SCRIPT_PATH = ""
+
+# --- Helper Functions ---
+
+def run_command(cmd_list, expect_error=False, check_output_for_error=True):
+    cprint(Colors.OKCYAN, f"  Executing: {' '.join(cmd_list)}")
+    try:
+        result = subprocess.run(cmd_list, capture_output=True, text=True, timeout=600)
+        stdout = result.stdout.strip() if result.stdout else ""
+        stderr = result.stderr.strip() if result.stderr else ""
+
+        if stdout:
+            print(f"    {Colors.INFO}STDOUT:{Colors.ENDC}\n      {stdout.replace(chr(10), chr(10) + '      ')}")
+        if stderr:
+            print(f"    {Colors.WARNING}STDERR:{Colors.ENDC}\n      {stderr.replace(chr(10), chr(10) + '      ')}")
+
+        has_error_in_output = "Error:" in stdout or "Error:" in stderr
+
+        if expect_error:
+            if result.returncode != 0 or (check_output_for_error and has_error_in_output):
+                cprint(Colors.OKGREEN, "    OK: Expected error/failure occurred.")
+                return True
+            else:
+                cprint(Colors.FAIL, "    FAIL: Expected an error but command succeeded or no 'Error:' in output.")
+                return False
         else:
-            print("Expected error occurred for:", cmd)
+            if result.returncode == 0 and not (check_output_for_error and has_error_in_output):
+                return True
+            else:
+                cprint(Colors.FAIL, f"    FAIL: Command failed or 'Error:' in output. Return code: {result.returncode}")
+                return False
+    except subprocess.TimeoutExpired:
+        cprint(Colors.FAIL, "    FAIL: Command timed out after 10 minutes.")
+        return False
+    except Exception as e:
+        cprint(Colors.FAIL, f"    FAIL: Exception during command execution: {e}")
+        return False
+
+def create_test_file_from_content(filename, content, binary_mode=False):
+    filepath = os.path.join(".", filename) # Assumes CWD is TEST_DIR
+    mode = "wb" if binary_mode else "w"
+    encoding = None if binary_mode else "utf-8"
+    with open(filepath, mode, encoding=encoding) as f:
+        f.write(content)
+    return filepath
+
+def copy_test_file(source_path, dest_filename):
+    """Copies a file from source_path (outside TEST_DIR) to dest_filename (inside TEST_DIR)."""
+    dest_path = os.path.join(".", dest_filename) # Assumes CWD is TEST_DIR
+    try:
+        shutil.copy2(source_path, dest_path)
+        cprint(Colors.INFO, f"    Copied '{source_path}' to '{dest_path}' for testing.")
+        return dest_path
+    except FileNotFoundError:
+        cprint(Colors.WARNING, f"    WARNING: Source file for copy not found: '{source_path}'. Skipping this specific file test.")
+        return None
+    except Exception as e:
+        cprint(Colors.WARNING, f"    WARNING: Could not copy file '{source_path}': {e}. Skipping this specific file test.")
+        return None
+
+
+def compare_files(file1_path, file2_path):
+    try:
+        with open(file1_path, "rb") as f1, open(file2_path, "rb") as f2:
+            bytes1 = f1.read()
+            bytes2 = f2.read()
+        return bytes1 == bytes2
+    except FileNotFoundError:
+        cprint(Colors.WARNING, f"    Comparison Error: One or both files not found: '{file1_path}', '{file2_path}'")
+        return False
+    except Exception as e:
+        cprint(Colors.WARNING, f"    Comparison Error: {e}")
+        return False
+
+def generate_random_string(length):
+    return ''.join(random.choices(string.ascii_letters + string.digits + string.punctuation + " ", k=length))
+
+def generate_random_bytes(length):
+    return os.urandom(length)
+
+class TestResult:
+    def __init__(self):
+        self.passed = 0
+        self.failed = 0
+        self.skipped = 0
+
+    def record_pass(self, test_name):
+        cprint(Colors.OKGREEN, f"  PASSED: {test_name}")
+        self.passed += 1
+
+    def record_fail(self, test_name, reason=""):
+        cprint(Colors.FAIL, f"  FAILED: {test_name} {(': ' + reason) if reason else ''}")
+        self.failed += 1
+    
+    def record_skip(self, test_name, reason=""):
+        cprint(Colors.OKCYAN, f"  SKIPPED: {test_name} {(': ' + reason) if reason else ''}")
+        self.skipped +=1
+
+    def summary(self):
+        cprint(Colors.HEADER, "\n--- Test Summary ---")
+        total_run = self.passed + self.failed
+        cprint(Colors.INFO, f"Total Tests Attempted: {total_run + self.skipped}")
+        cprint(Colors.OKGREEN, f"Passed: {self.passed}")
+        cprint(Colors.FAIL, f"Failed: {self.failed}")
+        if self.skipped > 0:
+            cprint(Colors.OKCYAN, f"Skipped: {self.skipped}")
+        
+        if self.failed > 0:
+            cprint(Colors.FAIL, "\n!!! SOME TESTS FAILED !!!")
+            return False
+        elif total_run == 0 and self.skipped > 0:
+             cprint(Colors.WARNING, "\n!!! NO TESTS EXECUTED (ALL SKIPPED) !!!")
+             return False # Still considered a failure if nothing ran
+        cprint(Colors.OKGREEN, "\nAll executed tests passed successfully!")
+        return True
+
+def run_encryption_decryption_test(test_name, results,
+                                   public_key_file, private_key_file,
+                                   file_content=None, input_file_to_copy_path=None, 
+                                   binary_mode=False, original_filename_override=None):
+    cprint(Colors.HEADER, f"\n--- Test Case: {test_name} ---")
+    
+    if input_file_to_copy_path:
+        original_filename = os.path.basename(input_file_to_copy_path)
+        original_filepath_in_testdir = copy_test_file(input_file_to_copy_path, original_filename)
+        if not original_filepath_in_testdir:
+            results.record_skip(test_name, "Input file could not be copied.")
+            return
+        binary_mode = True # Actual files are treated as binary for I/O
+    elif file_content is not None:
+        default_ext = ".dat" if binary_mode else ".txt"
+        original_filename = original_filename_override or f"{test_name.lower().replace(' ', '_').replace('(', '').replace(')','')}{default_ext}"
+        original_filepath_in_testdir = create_test_file_from_content(original_filename, file_content, binary_mode)
     else:
-        if result.returncode != 0:
-            print("ERROR: Command failed:", cmd)
-            sys.exit(1)
-    return result
+        results.record_fail(test_name, "No file content or path provided.")
+        return
 
-def compute_data_area(key_size):
-    """
-    Compute block_size and data_area based on the key size.
-    The RSA key generator produces keys such that modulus n has ~2*key_size bits.
-    Then we define:
-       block_size = ((key_size * 2) - 1) // 8
-       data_area = block_size - 15
-    """
-    block_size = ((key_size * 2) - 1) // 8
-    data_area = block_size - 15
-    return block_size, data_area
+    # 1. Encryption
+    print("  Phase 1: Encryption")
+    cmd_encrypt = [SAGE_CMD, ENCRYPT_SCRIPT_PATH, original_filename, public_key_file]
+    if not run_command(cmd_encrypt):
+        results.record_fail(f"{test_name} - Encryption Process Failed")
+        return
 
-def run_test(message_text, test_label):
-    """
-    Run encryption and decryption on the provided message_text.
-    The keys are assumed to be already generated.
-    """
-    message_filename = f"message_{test_label}.txt"
-    with open(message_filename, "w", encoding="utf-8") as f:
-        f.write(message_text)
-    
-    # Run encryption.
-    # Added quotes around filenames for robustness if they ever contain spaces
-    cmd_encrypt = f"sage rsa_encrypt.py '{message_filename}' public_key.csv"
-    run_command(cmd_encrypt)
-    
-    # Compute expected ciphertext file name.
-    base, ext = os.path.splitext(message_filename)
-    ciphertext_filename = f"{base}_cipher{ext}" if ext else f"{message_filename}_cipher"
-    
-    # Run decryption.
-    cmd_decrypt = f"sage rsa_decrypt.py '{ciphertext_filename}' private_key.csv"
-    run_command(cmd_decrypt)
-    
-    # Compute decrypted file name based on how rsa_decrypt.py names it
-    base_cipher, ext_cipher = os.path.splitext(ciphertext_filename)
+    base, ext = os.path.splitext(original_filename)
+    ciphertext_filename = f"{base}_cipher{ext}"
+    ciphertext_filepath = os.path.join(".", ciphertext_filename) # CWD is TEST_DIR
+
+    if not os.path.exists(ciphertext_filepath):
+        results.record_fail(f"{test_name} - Ciphertext file '{ciphertext_filename}' not created")
+        return
+
+    # 2. Decryption
+    print("\n  Phase 2: Decryption")
+    cmd_decrypt = [SAGE_CMD, DECRYPT_SCRIPT_PATH, ciphertext_filename, private_key_file]
+    if not run_command(cmd_decrypt):
+        results.record_fail(f"{test_name} - Decryption Process Failed")
+        return
+
+    base_cipher, ext_original = os.path.splitext(ciphertext_filename)
     if base_cipher.endswith("_cipher"):
-        original_base_from_cipher = base_cipher[:-len("_cipher")]
+        dec_base = base_cipher[:-len("_cipher")] + "_decrypted"
     else:
-        # This case should ideally not be hit if encrypt script is consistent
-        original_base_from_cipher = base_cipher 
-    decrypted_filename = f"{original_base_from_cipher}_decrypted{ext_cipher}"
-    
-    # Compare the original and decrypted messages.
-    with open(message_filename, "r", encoding="utf-8") as f:
-        original = f.read()
-    if not os.path.exists(decrypted_filename):
-        print(f"ERROR: Decrypted file '{decrypted_filename}' was not created.")
-        sys.exit(1) # Make sure this exit actually stops the current test run
-    with open(decrypted_filename, "r", encoding="utf-8") as f:
-        decrypted = f.read()
-    
-    if original == decrypted:
-        print(f"SUCCESS ({test_label}): Decrypted text matches the original!")
-    else:
-        print(f"FAILURE ({test_label}): Decrypted text does not match the original.")
-        # For very large files, printing the whole content might be too much.
-        # Consider printing only a snippet or lengths if they differ.
-        if len(original) < 500 and len(decrypted) < 500: # Only print if reasonably small
-            print("Original:", repr(original[:200])) # Print representation to see hidden chars
-            print("Decrypted:", repr(decrypted[:200]))
-        else:
-            print(f"Original length: {len(original)}, Decrypted length: {len(decrypted)}")
-            
-def main():
-    print("=== Group 1: Normal Key Size (1024 bits) ===")
-    # Run key generation for 1024-bit keys.
-    run_command("sage rsa_keygenerator.py 1024")
-    # Compute block_size and data_area.
-    block_size, data_area = compute_data_area(1024)
-    print(f"Computed block_size = {block_size}, data_area = {data_area} bytes")
-    
-    # Test messages for Group 1.
-    tests = [
-        ("exact", "X" * data_area),            # Exactly equal to data_area.
-        ("one_smaller", "Y" * (data_area - 1)),  # One byte smaller.
-        ("one_larger", "Z" * (data_area + 1)),   # One byte larger (should split into two blocks).
-        ("very_small", "HelloRSA!X"),           # Very small message (~10 bytes).
-        ("very_large", ''.join(random.choices(string.ascii_letters + string.digits, k=1048576)))  # 1 MB message.
-    ]
-    
-    for label, msg in tests:
-        print(f"\n--- Test: {label} (Message length: {len(msg)} bytes) ---")
-        try:
-            run_test(msg, label)
-        except SystemExit as e:
-            print(f"Test '{label}' failed with exit code {e}. Continuing to next test.")
-        except Exception as e:
-            print(f"Test '{label}' raised an unexpected exception: {e}. Continuing to next test.")
+        dec_base = base_cipher + "_decrypted" 
+    decrypted_filename = f"{dec_base}{ext_original}"
+    decrypted_filepath = os.path.join(".", decrypted_filename) # CWD is TEST_DIR
 
-    print("\n=== Group 2: Small Key Size (64 bits) ===")
-    # Run key generation for 64-bit keys.
-    run_command("sage rsa_keygenerator.py 64")
-    # For key_size=64, compute block_size and data_area.
-    block_size_small, data_area_small = compute_data_area(64)
-    print(f"Computed block_size = {block_size_small}, data_area = {data_area_small} bytes")
-    # Use a dummy message.
-    dummy_message = "Test"
-    print("\n--- Test: small_key (Expected to fail encryption/decryption due to insufficient block size) ---")
-    cmd_encrypt = f"sage rsa_encrypt.py message_small_key.txt public_key.csv"
-    # Create dummy message file.
-    with open("message_small_key.txt", "w", encoding="utf-8") as f:
-        f.write(dummy_message)
-    # For key size 64, we expect encryption to fail because data_area will be zero.
-    result = run_command(cmd_encrypt, expect_error=True)
-    # Check if ciphertext file was created (should not be)
-    base, ext = os.path.splitext("message_small_key.txt")
-    ciphertext_filename = f"{base}_cipher{ext}" if ext else f"message_small_key.txt_cipher"
-    if os.path.exists(ciphertext_filename):
-        print(f"ERROR: Ciphertext file '{ciphertext_filename}' was created unexpectedly.")
+    if not os.path.exists(decrypted_filepath):
+        results.record_fail(f"{test_name} - Decrypted file '{decrypted_filename}' not created")
+        return
+
+    # 3. Comparison
+    print("\n  Phase 3: Comparison")
+    if compare_files(original_filepath_in_testdir, decrypted_filepath):
+        results.record_pass(test_name)
     else:
-        print("Encryption failed as expected for key size 64.")
+        results.record_fail(f"{test_name} - File content mismatch after decryption")
+
+
+def setup_test_environment(project_root_dir):
+    global TEST_DIR_NAME, KEY_GENERATOR_SCRIPT_PATH, ENCRYPT_SCRIPT_PATH, DECRYPT_SCRIPT_PATH
+    
+    test_dir_abs_path = os.path.join(project_root_dir, TEST_DIR_NAME)
+    
+    if os.path.exists(test_dir_abs_path):
+        cprint(Colors.WARNING, f"Cleaning up existing test directory: {test_dir_abs_path}")
+        shutil.rmtree(test_dir_abs_path)
+    os.makedirs(test_dir_abs_path)
+    cprint(Colors.OKGREEN, f"Created test directory: {test_dir_abs_path}")
+    
+    os.chdir(test_dir_abs_path) # Change CWD for subprocesses
+    cprint(Colors.INFO, f"Changed CWD to: {os.getcwd()}")
+
+    # Resolve script paths based on project_root_dir
+    # Assumes rsa_*.py scripts are directly in project_root_dir
+    KEY_GENERATOR_SCRIPT_PATH = os.path.join(project_root_dir, KEY_GENERATOR_SCRIPT_NAME)
+    ENCRYPT_SCRIPT_PATH = os.path.join(project_root_dir, ENCRYPT_SCRIPT_NAME)
+    DECRYPT_SCRIPT_PATH = os.path.join(project_root_dir, DECRYPT_SCRIPT_NAME)
+
+    # Verify script paths
+    for script_path in [KEY_GENERATOR_SCRIPT_PATH, ENCRYPT_SCRIPT_PATH, DECRYPT_SCRIPT_PATH]:
+        if not os.path.exists(script_path):
+            cprint(Colors.FAIL, f"CRITICAL ERROR: Script not found: {script_path}")
+            cprint(Colors.FAIL, "Make sure test_rsa.py is in the project root with rsa_*.py scripts, or adjust paths.")
+            sys.exit(1)
+
+def main():
+    # Determine project root (where test_rsa.py is located)
+    project_root_dir = os.path.dirname(os.path.abspath(__file__))
+    original_cwd = os.getcwd() # Save CWD before changing it
+
+    setup_test_environment(project_root_dir)
+    
+    results = TestResult()
+
+    cprint(Colors.BOLD + Colors.HEADER, "\n===== RSA IMPLEMENTATION TEST SUITE =====\n")
+
+    # --- Test Group 1: Standard Key Size (1024-bit primes) ---
+    cprint(Colors.HEADER, "--- GROUP 1: Standard Key Size (1024-bit primes) ---")
+    key_size_1024 = 1024
+    target_public_key_1024 = "public_key_1024.csv"
+    target_private_key_1024 = "private_key_1024.csv"
+    default_pk = "public_key.csv" # Default name from rsa_keygenerator.py
+    default_sk = "private_key.csv"
+
+    cprint(Colors.INFO, f"Generating {key_size_1024}-bit keys...")
+    keys_1024_generated_ok = False
+    if not run_command([SAGE_CMD, KEY_GENERATOR_SCRIPT_PATH, str(key_size_1024)]):
+        results.record_fail(f"Key Generation ({key_size_1024}-bit)")
+    else:
+        try:
+            os.rename(default_pk, target_public_key_1024)
+            os.rename(default_sk, target_private_key_1024)
+            results.record_pass(f"Key Generation & Renaming ({key_size_1024}-bit)")
+            keys_1024_generated_ok = True
+        except Exception as e_rename:
+            results.record_fail(f"Key Generation ({key_size_1024}-bit) - Error renaming: {e_rename}")
+
+    if keys_1024_generated_ok:
+        data_area_1024 = 240 # For 1024-bit primes -> ~2048-bit N -> 255 byte block -> 240 data
+
+        synthetic_text_tests = [
+            ("Exact Size Text", generate_random_string(data_area_1024)),
+            ("Smaller Text", generate_random_string(data_area_1024 - 10)),
+            ("Larger Text (2 blocks)", generate_random_string(data_area_1024 + 10)),
+            ("Very Small Text", "RSA Test!"),
+            ("Medium Text (5KB)", generate_random_string(5 * 1024)),
+        ]
+        for name, content in synthetic_text_tests:
+            run_encryption_decryption_test(f"{name} (1024-bit key)", results,
+                                           public_key_file=target_public_key_1024,
+                                           private_key_file=target_private_key_1024,
+                                           file_content=content, binary_mode=False)
+        
+        synthetic_binary_tests = [
+            ("Small Binary (1KB)", generate_random_bytes(1024)),
+            ("Medium Binary (100KB)", generate_random_bytes(100 * 1024)),
+        ]
+        for name, content in synthetic_binary_tests:
+            run_encryption_decryption_test(f"{name} (1024-bit key)", results,
+                                           public_key_file=target_public_key_1024,
+                                           private_key_file=target_private_key_1024,
+                                           file_content=content, binary_mode=True)
+
+        # Test with actual files provided by user
+        actual_files_to_test = ["image.png", "image.jpg", "letter.pdf", "letter.docx"]
+        for filename in actual_files_to_test:
+            # Source path is relative to where test_rsa.py was originally run from
+            source_file_path = os.path.join(project_root_dir, filename) 
+            run_encryption_decryption_test(f"Actual File: {filename} (1024-bit key)", results,
+                                           public_key_file=target_public_key_1024,
+                                           private_key_file=target_private_key_1024,
+                                           input_file_to_copy_path=source_file_path)
+    else:
+        results.record_skip("All Group 1 Encryption/Decryption Tests", "1024-bit key generation failed.")
+
+    # --- Test Group 2: Small Key Size ---
+    cprint(Colors.HEADER, "\n--- GROUP 2: Small Key Size (64-bit primes, Expecting Encryption Failure) ---")
+    key_size_64 = 64
+    target_public_key_64 = "public_key_64.csv"
+    # private_key_64 = "private_key_64.csv" # Not strictly needed if encryption fails
+
+    cprint(Colors.INFO, f"Generating {key_size_64}-bit keys...")
+    keys_64_generated_ok = False
+    if not run_command([SAGE_CMD, KEY_GENERATOR_SCRIPT_PATH, str(key_size_64)]):
+        results.record_fail(f"Key Generation ({key_size_64}-bit)")
+    else:
+        try:
+            os.rename(default_pk, target_public_key_64)
+            # os.rename(default_sk, target_private_key_64) # Private key not used if enc fails
+            if os.path.exists(default_sk): os.remove(default_sk) # Clean up unused default private key
+            results.record_pass(f"Key Generation & Renaming ({key_size_64}-bit)")
+            keys_64_generated_ok = True
+        except Exception as e_rename_64:
+            results.record_fail(f"Key Generation ({key_size_64}-bit) - Error renaming: {e_rename_64}")
+
+    if keys_64_generated_ok:
+        cprint(Colors.INFO, "  Attempting encryption with small key (expected to fail)...")
+        dummy_filename = "dummy_small_key.txt"
+        create_test_file_from_content(dummy_filename, "test")
+        
+        cmd_encrypt_small = [SAGE_CMD, ENCRYPT_SCRIPT_PATH, dummy_filename, target_public_key_64]
+        if run_command(cmd_encrypt_small, expect_error=True, check_output_for_error=True):
+            results.record_pass("Encryption Failure with Small Key (Expected)")
+        else:
+            results.record_fail("Encryption Failure with Small Key (ERROR: Succeeded or no error message)")
+    else:
+        results.record_skip("Small Key Encryption Test", "64-bit key generation failed.")
+
+    # --- Test Group 3: Key File Issues ---
+    cprint(Colors.HEADER, "\n--- GROUP 3: Key File Handling Tests ---")
+    if keys_1024_generated_ok: # Only run if 1024-bit keys are available
+        test_file_for_key_issues = "message_for_key_issues.txt"
+        create_test_file_from_content(test_file_for_key_issues, "Test content.")
+
+        cprint(Colors.INFO, "  Test: Encryption with non-existent public key file")
+        cmd_enc_bad_pub = [SAGE_CMD, ENCRYPT_SCRIPT_PATH, test_file_for_key_issues, "non_existent_public.csv"]
+        if run_command(cmd_enc_bad_pub, expect_error=True, check_output_for_error=True):
+            results.record_pass("Encryption with Non-existent Public Key")
+        else:
+            results.record_fail("Encryption with Non-existent Public Key")
+        
+        # Create a valid cipher file to test decryption with bad private key
+        valid_cipher_for_test = "valid_cipher_for_bad_sk_test_cipher.txt" # Ensure .txt for consistent naming
+        plain_for_valid_cipher = "plain_for_valid_cipher.txt"
+        create_test_file_from_content(plain_for_valid_cipher, "abc")
+
+        cprint(Colors.INFO, "  Generating temporary valid ciphertext for next test...")
+        if run_command([SAGE_CMD, ENCRYPT_SCRIPT_PATH, plain_for_valid_cipher, target_public_key_1024]):
+             # Check if "plain_for_valid_cipher_cipher.txt" was created by the encrypt script
+            expected_temp_cipher_name = f"{os.path.splitext(plain_for_valid_cipher)[0]}_cipher{os.path.splitext(plain_for_valid_cipher)[1]}"
+            if os.path.exists(expected_temp_cipher_name):
+                cprint(Colors.INFO, "\n  Test: Decryption with non-existent private key file")
+                cmd_dec_bad_priv = [SAGE_CMD, DECRYPT_SCRIPT_PATH, expected_temp_cipher_name, "non_existent_private.csv"]
+                if run_command(cmd_dec_bad_priv, expect_error=True, check_output_for_error=True):
+                    results.record_pass("Decryption with Non-existent Private Key")
+                else:
+                    results.record_fail("Decryption with Non-existent Private Key")
+            else:
+                results.record_skip("Decryption with Non-existent Private Key", f"Temp cipher file '{expected_temp_cipher_name}' not created.")
+        else:
+            results.record_skip("Decryption with Non-existent Private Key", "Failed to create temp cipher file.")
+    else:
+        results.record_skip("All Key File Handling Tests", "1024-bit keys not available.")
+
+    # --- Final Summary ---
+    all_passed = results.summary()
+    
+    os.chdir(original_cwd) # IMPORTANT: Change back to original CWD
+    test_dir_abs_path = os.path.join(project_root_dir, TEST_DIR_NAME)
+    if all_passed :
+         cprint(Colors.OKGREEN, f"Cleaning up test directory: {test_dir_abs_path}")
+         shutil.rmtree(test_dir_abs_path)
+    else:
+         cprint(Colors.WARNING, f"Test directory '{test_dir_abs_path}' retained due to failures or skips.")
+
+    if not all_passed:
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
