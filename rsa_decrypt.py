@@ -43,7 +43,7 @@ def main():
             if len(row) < 2:
                 print("Error: Invalid private key file format.")
                 sys.exit(1)
-            d_val = Integer(row[0]) # Renamed from 'd' to avoid potential clash if 'd' used as loop var
+            d = Integer(row[0]) # Renamed from 'd' to avoid potential clash if 'd' used as loop var
             n = Integer(row[1])
     except FileNotFoundError:
         print(f"Error: Private key file '{private_key_csv}' not found.")
@@ -93,7 +93,7 @@ def main():
     
     # print("=== Decrypting Blocks ===") # Kept commented
     for i, c_int in enumerate(encrypted_blocks):
-        m_int = power_mod(c_int, d_val, n)
+        m_int = power_mod(c_int, d, n)
         
         # Convert decrypted integer back to a full block (block_size bytes).
         try:
