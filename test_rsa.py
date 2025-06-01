@@ -8,14 +8,15 @@ using SageMath scripts.
 This driver runs tests for:
   - Different key sizes.
   - Various message/file sizes (text and binary).
-  - Specific file types (images, PDF, DOCX).
+  - Specific file types (as provided by user).
   - Edge cases like key sizes too small for padding.
   - Robustness against missing key files.
 
 Usage:
     python3 test_rsa.py
 
-Imp: Place test files like "image.png", "image.jpg", "letter.pdf", "letter.docx", in the same directory as this test_rsa.py script.
+Imp: Place your test files (e.g., test.docx, test.jpg, test.txt, etc.) 
+     in the same directory as this test_rsa.py script.
 
 Note: Output from the underlying RSA scripts is printed.
       A summary of test results is provided at the end.
@@ -62,7 +63,8 @@ DECRYPT_SCRIPT_PATH = ""
 def run_command(cmd_list, expect_error=False, check_output_for_error=True):
     cprint(Colors.OKCYAN, f"  Executing: {' '.join(cmd_list)}")
     try:
-        result = subprocess.run(cmd_list, capture_output=True, text=True, timeout=600)
+        # Ensure text=True and specify encoding for Popen/run
+        result = subprocess.run(cmd_list, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
         stdout = result.stdout.strip() if result.stdout else ""
         stderr = result.stderr.strip() if result.stderr else ""
 
@@ -71,20 +73,21 @@ def run_command(cmd_list, expect_error=False, check_output_for_error=True):
         if stderr:
             print(f"    {Colors.WARNING}STDERR:{Colors.ENDC}\n      {stderr.replace(chr(10), chr(10) + '      ')}")
 
-        has_error_in_output = "Error:" in stdout or "Error:" in stderr
+        # Check for "Error:" or "Traceback" (more robust for Sage errors)
+        has_error_in_output = "Error:" in stdout or "Error:" in stderr or "Traceback (most recent call last):" in stderr
 
         if expect_error:
             if result.returncode != 0 or (check_output_for_error and has_error_in_output):
                 cprint(Colors.OKGREEN, "    OK: Expected error/failure occurred.")
                 return True
             else:
-                cprint(Colors.FAIL, "    FAIL: Expected an error but command succeeded or no 'Error:' in output.")
+                cprint(Colors.FAIL, "    FAIL: Expected an error but command succeeded or no 'Error:'/'Traceback' in output.")
                 return False
         else:
             if result.returncode == 0 and not (check_output_for_error and has_error_in_output):
                 return True
             else:
-                cprint(Colors.FAIL, f"    FAIL: Command failed or 'Error:' in output. Return code: {result.returncode}")
+                cprint(Colors.FAIL, f"    FAIL: Command failed or 'Error:'/'Traceback' in output. Return code: {result.returncode}")
                 return False
     except subprocess.TimeoutExpired:
         cprint(Colors.FAIL, "    FAIL: Command timed out after 10 minutes.")
@@ -181,7 +184,7 @@ def run_encryption_decryption_test(test_name, results,
         original_filename = os.path.basename(input_file_to_copy_path)
         original_filepath_in_testdir = copy_test_file(input_file_to_copy_path, original_filename)
         if not original_filepath_in_testdir:
-            results.record_skip(test_name, "Input file could not be copied.")
+            results.record_skip(test_name, f"Input file '{input_file_to_copy_path}' could not be copied or found.")
             return
         binary_mode = True # Actual files are treated as binary for I/O
     elif file_content is not None:
@@ -214,11 +217,14 @@ def run_encryption_decryption_test(test_name, results,
         results.record_fail(f"{test_name} - Decryption Process Failed")
         return
 
-    base_cipher, ext_original = os.path.splitext(ciphertext_filename)
+    # Determine expected decrypted filename based on how rsa_decrypt.py names its output
+    # Assuming rsa_decrypt.py creates <original_base_name_without_cipher>_decrypted.<original_ext>
+    # e.g., if ciphertext is "file_cipher.txt", decrypted is "file_decrypted.txt"
+    base_cipher, ext_original = os.path.splitext(ciphertext_filename) 
     if base_cipher.endswith("_cipher"):
-        dec_base = base_cipher[:-len("_cipher")] + "_decrypted"
-    else:
-        dec_base = base_cipher + "_decrypted" 
+        dec_base = base_cipher[:-len("_cipher")] + "_decrypted" 
+    else: # Fallback if _cipher is not in the name (less likely with current setup)
+        dec_base = base_cipher + "_decrypted"
     decrypted_filename = f"{dec_base}{ext_original}"
     decrypted_filepath = os.path.join(".", decrypted_filename) # CWD is TEST_DIR
 
@@ -248,13 +254,10 @@ def setup_test_environment(project_root_dir):
     os.chdir(test_dir_abs_path) # Change CWD for subprocesses
     cprint(Colors.INFO, f"Changed CWD to: {os.getcwd()}")
 
-    # Resolve script paths based on project_root_dir
-    # Assumes rsa_*.py scripts are directly in project_root_dir
     KEY_GENERATOR_SCRIPT_PATH = os.path.join(project_root_dir, KEY_GENERATOR_SCRIPT_NAME)
     ENCRYPT_SCRIPT_PATH = os.path.join(project_root_dir, ENCRYPT_SCRIPT_NAME)
     DECRYPT_SCRIPT_PATH = os.path.join(project_root_dir, DECRYPT_SCRIPT_NAME)
 
-    # Verify script paths
     for script_path in [KEY_GENERATOR_SCRIPT_PATH, ENCRYPT_SCRIPT_PATH, DECRYPT_SCRIPT_PATH]:
         if not os.path.exists(script_path):
             cprint(Colors.FAIL, f"CRITICAL ERROR: Script not found: {script_path}")
@@ -262,9 +265,8 @@ def setup_test_environment(project_root_dir):
             sys.exit(1)
 
 def main():
-    # Determine project root (where test_rsa.py is located)
     project_root_dir = os.path.dirname(os.path.abspath(__file__))
-    original_cwd = os.getcwd() # Save CWD before changing it
+    original_cwd = os.getcwd() 
 
     setup_test_environment(project_root_dir)
     
@@ -274,32 +276,40 @@ def main():
 
     # --- Test Group 1: Standard Key Size (1024-bit primes) ---
     cprint(Colors.HEADER, "--- GROUP 1: Standard Key Size (1024-bit primes) ---")
-    key_size_1024 = 1024
+    key_size_1024 = 1024 # Key size for rsa_keygenerator.py (prime size)
     target_public_key_1024 = "public_key_1024.csv"
     target_private_key_1024 = "private_key_1024.csv"
-    default_pk = "public_key.csv" # Default name from rsa_keygenerator.py
+    default_pk = "public_key.csv" 
     default_sk = "private_key.csv"
 
     cprint(Colors.INFO, f"Generating {key_size_1024}-bit keys...")
     keys_1024_generated_ok = False
     if not run_command([SAGE_CMD, KEY_GENERATOR_SCRIPT_PATH, str(key_size_1024)]):
-        results.record_fail(f"Key Generation ({key_size_1024}-bit)")
+        results.record_fail(f"Key Generation ({key_size_1024}-bit primes)")
     else:
         try:
-            os.rename(default_pk, target_public_key_1024)
-            os.rename(default_sk, target_private_key_1024)
-            results.record_pass(f"Key Generation & Renaming ({key_size_1024}-bit)")
-            keys_1024_generated_ok = True
+            if os.path.exists(default_pk) and os.path.exists(default_sk):
+                os.rename(default_pk, target_public_key_1024)
+                os.rename(default_sk, target_private_key_1024)
+                results.record_pass(f"Key Generation & Renaming ({key_size_1024}-bit primes)")
+                keys_1024_generated_ok = True
+            else:
+                results.record_fail(f"Key Generation ({key_size_1024}-bit primes) - Default key files not found after generation.")
         except Exception as e_rename:
-            results.record_fail(f"Key Generation ({key_size_1024}-bit) - Error renaming: {e_rename}")
+            results.record_fail(f"Key Generation ({key_size_1024}-bit primes) - Error renaming: {e_rename}")
 
     if keys_1024_generated_ok:
-        data_area_1024 = 240 # For 1024-bit primes -> ~2048-bit N -> 255 byte block -> 240 data
+        # Assuming primes of 1024 bits, N is ~2048 bits.
+        # OAEP padding for SHA256 uses 2*hLen + 2 bytes. hLen for SHA256 is 32 bytes.
+        # So, 2*32 + 2 = 66 bytes of overhead.
+        # Max message per block = (2048/8) - 66 = 256 - 66 = 190 bytes.
+        # For safety and simplicity, let's use a slightly smaller data_area.
+        data_area_1024 = 180 
 
         synthetic_text_tests = [
             ("Exact Size Text", generate_random_string(data_area_1024)),
             ("Smaller Text", generate_random_string(data_area_1024 - 10)),
-            ("Larger Text (2 blocks)", generate_random_string(data_area_1024 + 10)),
+            ("Larger Text (2 blocks)", generate_random_string(data_area_1024 + 50)), # Ensure it goes over one block
             ("Very Small Text", "RSA Test!"),
             ("Medium Text (5KB)", generate_random_string(5 * 1024)),
         ]
@@ -310,7 +320,7 @@ def main():
                                            file_content=content, binary_mode=False)
         
         synthetic_binary_tests = [
-            ("Small Binary (1KB)", generate_random_bytes(1024)),
+            ("Small Binary (1KB)", generate_random_bytes(1 * 1024)),
             ("Medium Binary (100KB)", generate_random_bytes(100 * 1024)),
         ]
         for name, content in synthetic_binary_tests:
@@ -320,53 +330,62 @@ def main():
                                            file_content=content, binary_mode=True)
 
         # Test with actual files provided by user
-        actual_files_to_test = ["image.png", "image.jpg", "letter.pdf", "letter.docx"]
+        # IMPORTANT: These files must exist in the same directory as test_rsa.py
+        actual_files_to_test = [
+            "test.txt", "test.docx", "test.jpg", "test.mov", "test.mp3",
+            "test.mp4", "test.pdf", "test.png", "test.ppt"
+        ]
         for filename in actual_files_to_test:
-            # Source path is relative to where test_rsa.py was originally run from
             source_file_path = os.path.join(project_root_dir, filename) 
             run_encryption_decryption_test(f"Actual File: {filename} (1024-bit key)", results,
                                            public_key_file=target_public_key_1024,
                                            private_key_file=target_private_key_1024,
                                            input_file_to_copy_path=source_file_path)
     else:
-        results.record_skip("All Group 1 Encryption/Decryption Tests", "1024-bit key generation failed.")
+        results.record_skip("All Group 1 Encryption/Decryption Tests", "1024-bit prime key generation failed.")
 
     # --- Test Group 2: Small Key Size ---
-    cprint(Colors.HEADER, "\n--- GROUP 2: Small Key Size (64-bit primes, Expecting Encryption Failure) ---")
-    key_size_64 = 64
+    cprint(Colors.HEADER, "\n--- GROUP 2: Small Key Size (e.g., 64-bit primes, Expecting Encryption Failure with OAEP) ---")
+    # For RSA with OAEP, the message length mLen must satisfy mLen <= k - 2hLen - 2
+    # k = modulus byte length. For 64-bit primes, N is ~128 bits = 16 bytes.
+    # hLen for SHA256 = 32 bytes. So, k - 2hLen - 2 = 16 - 2*32 - 2 = 16 - 64 - 2 = -50 bytes.
+    # This means encryption should fail because message length cannot be negative.
+    key_size_prime_64 = 64 
     target_public_key_64 = "public_key_64.csv"
-    # private_key_64 = "private_key_64.csv" # Not strictly needed if encryption fails
 
-    cprint(Colors.INFO, f"Generating {key_size_64}-bit keys...")
+    cprint(Colors.INFO, f"Generating {key_size_prime_64}-bit prime keys...")
     keys_64_generated_ok = False
-    if not run_command([SAGE_CMD, KEY_GENERATOR_SCRIPT_PATH, str(key_size_64)]):
-        results.record_fail(f"Key Generation ({key_size_64}-bit)")
+    if not run_command([SAGE_CMD, KEY_GENERATOR_SCRIPT_PATH, str(key_size_prime_64)]):
+        results.record_fail(f"Key Generation ({key_size_prime_64}-bit primes)")
     else:
         try:
-            os.rename(default_pk, target_public_key_64)
-            # os.rename(default_sk, target_private_key_64) # Private key not used if enc fails
-            if os.path.exists(default_sk): os.remove(default_sk) # Clean up unused default private key
-            results.record_pass(f"Key Generation & Renaming ({key_size_64}-bit)")
-            keys_64_generated_ok = True
+            if os.path.exists(default_pk):
+                os.rename(default_pk, target_public_key_64)
+                if os.path.exists(default_sk): os.remove(default_sk) # Clean up unused private key
+                results.record_pass(f"Key Generation & Renaming ({key_size_prime_64}-bit primes)")
+                keys_64_generated_ok = True
+            else:
+                results.record_fail(f"Key Generation ({key_size_prime_64}-bit primes) - Default public key not found.")
         except Exception as e_rename_64:
-            results.record_fail(f"Key Generation ({key_size_64}-bit) - Error renaming: {e_rename_64}")
+            results.record_fail(f"Key Generation ({key_size_prime_64}-bit primes) - Error renaming: {e_rename_64}")
 
     if keys_64_generated_ok:
-        cprint(Colors.INFO, "  Attempting encryption with small key (expected to fail)...")
-        dummy_filename = "dummy_small_key.txt"
-        create_test_file_from_content(dummy_filename, "test")
+        cprint(Colors.INFO, "  Attempting encryption with small key (expected to fail due to OAEP constraints)...")
+        dummy_filename_small_key = "dummy_for_small_key_test.txt"
+        create_test_file_from_content(dummy_filename_small_key, "test") # Content doesn't matter much, OAEP check is first
         
-        cmd_encrypt_small = [SAGE_CMD, ENCRYPT_SCRIPT_PATH, dummy_filename, target_public_key_64]
+        cmd_encrypt_small = [SAGE_CMD, ENCRYPT_SCRIPT_PATH, dummy_filename_small_key, target_public_key_64]
+        # Expect an error message from rsa_encrypt.py like "ValueError: Plaintext is too long." or similar
         if run_command(cmd_encrypt_small, expect_error=True, check_output_for_error=True):
-            results.record_pass("Encryption Failure with Small Key (Expected)")
+            results.record_pass("Encryption Failure with Small Key (Expected due to OAEP)")
         else:
             results.record_fail("Encryption Failure with Small Key (ERROR: Succeeded or no error message)")
     else:
-        results.record_skip("Small Key Encryption Test", "64-bit key generation failed.")
+        results.record_skip("Small Key Encryption Test", f"{key_size_prime_64}-bit prime key generation failed.")
 
     # --- Test Group 3: Key File Issues ---
     cprint(Colors.HEADER, "\n--- GROUP 3: Key File Handling Tests ---")
-    if keys_1024_generated_ok: # Only run if 1024-bit keys are available
+    if keys_1024_generated_ok: 
         test_file_for_key_issues = "message_for_key_issues.txt"
         create_test_file_from_content(test_file_for_key_issues, "Test content.")
 
@@ -377,14 +396,13 @@ def main():
         else:
             results.record_fail("Encryption with Non-existent Public Key")
         
-        # Create a valid cipher file to test decryption with bad private key
-        valid_cipher_for_test = "valid_cipher_for_bad_sk_test_cipher.txt" # Ensure .txt for consistent naming
         plain_for_valid_cipher = "plain_for_valid_cipher.txt"
-        create_test_file_from_content(plain_for_valid_cipher, "abc")
+        create_test_file_from_content(plain_for_valid_cipher, "abc") # Small content
 
         cprint(Colors.INFO, "  Generating temporary valid ciphertext for next test...")
-        if run_command([SAGE_CMD, ENCRYPT_SCRIPT_PATH, plain_for_valid_cipher, target_public_key_1024]):
-             # Check if "plain_for_valid_cipher_cipher.txt" was created by the encrypt script
+        # Use the existing 1024-bit public key for this
+        cmd_temp_encrypt = [SAGE_CMD, ENCRYPT_SCRIPT_PATH, plain_for_valid_cipher, target_public_key_1024]
+        if run_command(cmd_temp_encrypt): # Should succeed
             expected_temp_cipher_name = f"{os.path.splitext(plain_for_valid_cipher)[0]}_cipher{os.path.splitext(plain_for_valid_cipher)[1]}"
             if os.path.exists(expected_temp_cipher_name):
                 cprint(Colors.INFO, "\n  Test: Decryption with non-existent private key file")
@@ -394,18 +412,19 @@ def main():
                 else:
                     results.record_fail("Decryption with Non-existent Private Key")
             else:
-                results.record_skip("Decryption with Non-existent Private Key", f"Temp cipher file '{expected_temp_cipher_name}' not created.")
+                results.record_skip("Decryption with Non-existent Private Key", f"Temp cipher file '{expected_temp_cipher_name}' not created during setup.")
         else:
-            results.record_skip("Decryption with Non-existent Private Key", "Failed to create temp cipher file.")
+            results.record_skip("Decryption with Non-existent Private Key", "Failed to create temp cipher file for this test.")
     else:
-        results.record_skip("All Key File Handling Tests", "1024-bit keys not available.")
+        results.record_skip("All Key File Handling Tests", "1024-bit prime keys not available from Group 1.")
 
     # --- Final Summary ---
     all_passed = results.summary()
     
-    os.chdir(original_cwd) # IMPORTANT: Change back to original CWD
+    os.chdir(original_cwd) 
     test_dir_abs_path = os.path.join(project_root_dir, TEST_DIR_NAME)
-    if all_passed :
+    # Clean up test directory only if all tests passed, otherwise keep for inspection
+    if all_passed and results.skipped == 0 : # Only clean if all passed AND nothing was skipped
          cprint(Colors.OKGREEN, f"Cleaning up test directory: {test_dir_abs_path}")
          shutil.rmtree(test_dir_abs_path)
     else:
